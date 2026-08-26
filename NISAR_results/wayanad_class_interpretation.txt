@@ -1,0 +1,71 @@
+WAYANAD NISAR K-MEANS CLASS INTERPRETATION
+============================================================
+
+IMPORTANT:
+K-Means class numbers are arbitrary. The interpretations below are provisional and must be validated using reference data or known geographic features.
+
+CLASS 1
+--------------------------------------------------
+Interpretation: Mixed vegetation / agricultural surface
+Percentage: 35.28%
+Area: 998.27 km²
+HH mean: -5.9021 dB
+HV mean: -10.7120 dB
+HH/HV ratio: 3.1413
+Normalized difference: 0.4963
+
+Description:
+Moderate HH and HV response with intermediate HH/HV ratio; may represent mixed vegetation, agricultural land or moderately structured surfaces.
+
+CLASS 2
+--------------------------------------------------
+Interpretation: Built-up / exposed structured surface
+Percentage: 23.56%
+Area: 666.72 km²
+HH mean: -4.5167 dB
+HV mean: -13.3346 dB
+HH/HV ratio: 8.0541
+Normalized difference: 0.7598
+
+Description:
+Strong HH dominance and relatively high HH/HV ratio; potentially associated with built-up, exposed or strongly structured surfaces.
+
+CLASS 3
+--------------------------------------------------
+Interpretation: Strong structural / double-bounce-like scattering
+Percentage: 4.99%
+Area: 141.31 km²
+HH mean: -4.5461 dB
+HV mean: -18.6536 dB
+HH/HV ratio: 28.4249
+Normalized difference: 0.9201
+
+Description:
+Very strong HH dominance, very low HV and high HH/HV ratio; potentially associated with strongly structured or anthropogenic surfaces.
+
+CLASS 4
+--------------------------------------------------
+Interpretation: Low-backscatter smooth surface
+Percentage: 18.00%
+Area: 509.24 km²
+HH mean: -11.3763 dB
+HV mean: -18.4922 dB
+HH/HV ratio: 5.9565
+Normalized difference: 0.6486
+
+Description:
+Relatively low HH and HV backscatter; may include water, radar-shadow, smooth terrain or other low-scattering surfaces.
+
+CLASS 5
+--------------------------------------------------
+Interpretation: Forest / dense vegetation
+Percentage: 18.17%
+Area: 514.17 km²
+HH mean: -9.0830 dB
+HV mean: -10.2011 dB
+HH/HV ratio: 1.3734
+Normalized difference: 0.1260
+
+Description:
+Relatively strong HV response, low HH/HV ratio and low normalized difference; consistent with vegetation-related volume scattering.
+
