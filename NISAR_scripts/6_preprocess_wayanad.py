@@ -48,12 +48,16 @@ with rasterio.open(MASK_INPUT) as src:
 # 1+  = valid radar data
 # 255 = outside acquisition extent
 
+
 valid_mask = (
     (mask != 255) &
-    (mask != 0) &
+    (mask > 0) &
     np.isfinite(hh) &
-    np.isfinite(hv)
+    np.isfinite(hv) &
+    (hh > 0) &
+    (hv > 0)
 )
+
 
 print("\nInput dimensions:")
 print("Rows:", hh.shape[0])

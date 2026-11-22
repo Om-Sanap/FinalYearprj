@@ -1,11 +1,52 @@
-import os
+
+"""
+WAYANAD NISAR - REFERENCE SAMPLE GENERATION
+
+Generates reproducible, stratified random sample locations from the
+current K-Means classification for independent reference labeling.
+
+IMPORTANT:
+- Predicted cluster IDs are not validated land-cover labels.
+- Reference labels remain blank until independently assigned.
+- Sampling locations alone do not constitute an accuracy assessment.
+"""
+
+from pathlib import Path
+
 import csv
 import numpy as np
 import rasterio
+from rasterio.windows import Window
 
 
 # ============================================================
-# WAYANAD NISAR REFERENCE SAMPLE GENERATION
+# PATHS
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+RESULTS_DIR = BASE_DIR / "NISAR_results"
+
+CLASSIFICATION_FILE = (
+    RESULTS_DIR / "wayanad_kmeans_classification.tif"
+)
+
+OUTPUT_CSV = RESULTS_DIR / "wayanad_reference_samples.csv"
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+SAMPLES_PER_CLASS = 200
+RANDOM_SEED = 42
+WINDOW_SIZE = 512
+
+# Class IDs are detected from the raster.
+# Class 0 and negative values are treated as background/invalid.
+
+
+# ============================================================
+# HEADER
 # ============================================================
 
 print("=" * 70)
@@ -14,200 +55,255 @@ print("=" * 70)
 
 
 # ============================================================
-# PATHS
-# ============================================================
-
-BASE_DIR = r"D:\FinalYearPrj\prj"
-
-CLASSIFICATION_FILE = os.path.join(
-    BASE_DIR,
-    "NISAR_output",
-    "wayanad_kmeans_classes.tif"
-)
-
-RESULTS_DIR = os.path.join(
-    BASE_DIR,
-    "NISAR_results"
-)
-
-os.makedirs(RESULTS_DIR, exist_ok=True)
-
-OUTPUT_CSV = os.path.join(
-    RESULTS_DIR,
-    "wayanad_reference_samples.csv"
-)
-
-
-# ============================================================
-# SETTINGS
-# ============================================================
-
-# Number of validation samples per K-Means class
-SAMPLES_PER_CLASS = 200
-
-# Random seed for reproducibility
-RANDOM_SEED = 42
-
-CLASSES = [1, 2, 3, 4, 5]
-
-CLASS_NAMES = {
-    1: "Mixed vegetation / agricultural",
-    2: "Built-up / exposed structured",
-    3: "Strong structural / double-bounce-like",
-    4: "Low-backscatter smooth surface",
-    5: "Forest / dense vegetation"
-}
-
-
-# ============================================================
 # CHECK INPUT
 # ============================================================
 
-if not os.path.exists(CLASSIFICATION_FILE):
-
+if not CLASSIFICATION_FILE.is_file():
     raise FileNotFoundError(
         f"\nClassification raster not found:\n"
-        f"{CLASSIFICATION_FILE}"
+        f"{CLASSIFICATION_FILE}\n\n"
+        "Expected the current classification in NISAR_results."
     )
-
-
-# ============================================================
-# LOAD CLASSIFICATION
-# ============================================================
-
-print("\nLoading K-Means classification...")
-
-with rasterio.open(CLASSIFICATION_FILE) as src:
-
-    classification = src.read(1)
-
-    transform = src.transform
-    crs = src.crs
-
-    height = src.height
-    width = src.width
-
-print("Image shape :", classification.shape)
-print("CRS         :", crs)
-print("Width       :", width)
-print("Height      :", height)
-
-
-# ============================================================
-# RANDOM GENERATOR
-# ============================================================
 
 rng = np.random.default_rng(RANDOM_SEED)
 
 
 # ============================================================
-# CREATE STRATIFIED SAMPLES
+# OPEN CLASSIFICATION AND DETECT CLASSES
 # ============================================================
 
-print("\nCreating stratified validation samples...")
+with rasterio.open(CLASSIFICATION_FILE) as src:
 
-all_samples = []
+    if src.crs is None:
+        raise ValueError("Classification raster has no CRS.")
 
+    transform = src.transform
+    crs = src.crs
+    width = src.width
+    height = src.height
 
-for class_id in CLASSES:
+    print("\nClassification:", CLASSIFICATION_FILE)
+    print("Image dimensions:", width, "columns x", height, "rows")
+    print("CRS:", crs)
 
-    print(f"\nClass {class_id}")
-    print("-" * 40)
+    # --------------------------------------------------------
+    # PASS 1: detect class IDs and count available pixels
+    # --------------------------------------------------------
 
-    rows, cols = np.where(
-        classification == class_id
-    )
+    print("\nScanning for actual class IDs...")
 
-    total_pixels = len(rows)
+    class_counts = {}
 
-    print("Available pixels :", total_pixels)
+    for row_off in range(0, height, WINDOW_SIZE):
+        for col_off in range(0, width, WINDOW_SIZE):
 
-    if total_pixels < SAMPLES_PER_CLASS:
+            window = Window(
+                col_off,
+                row_off,
+                min(WINDOW_SIZE, width - col_off),
+                min(WINDOW_SIZE, height - row_off),
+            )
 
+            band = src.read(1, window=window, masked=True)
+            values = np.asarray(band.data)
+
+            valid = ~np.ma.getmaskarray(band)
+            valid &= np.isfinite(values)
+            valid &= values > 0
+
+            if not np.any(valid):
+                continue
+
+            class_ids, counts = np.unique(
+                values[valid].astype(np.int64),
+                return_counts=True,
+            )
+
+            for class_id, count in zip(class_ids, counts):
+                class_id = int(class_id)
+                class_counts[class_id] = (
+                    class_counts.get(class_id, 0) + int(count)
+                )
+
+    class_ids = sorted(class_counts)
+
+    if not class_ids:
         raise ValueError(
-            f"Not enough pixels in Class {class_id}"
+            "No valid class IDs greater than zero were found."
         )
 
-    # Randomly select pixels
-    selected_indices = rng.choice(
-        total_pixels,
-        size=SAMPLES_PER_CLASS,
-        replace=False
-    )
+    print("\nDetected classes:", class_ids)
 
-    selected_rows = rows[selected_indices]
-    selected_cols = cols[selected_indices]
-
-
-    for row, col in zip(
-        selected_rows,
-        selected_cols
-    ):
-
-        # Convert pixel coordinates to map coordinates
-        x, y = rasterio.transform.xy(
-            transform,
-            int(row),
-            int(col),
-            offset="center"
+    for class_id in class_ids:
+        print(
+            f"Class {class_id}: "
+            f"{class_counts[class_id]:,} available pixels"
         )
 
-        all_samples.append({
+    # --------------------------------------------------------
+    # Determine sample counts
+    # --------------------------------------------------------
 
-            "sample_id": len(all_samples) + 1,
+    sample_targets = {}
 
-            "row": int(row),
+    for class_id in class_ids:
+        available = class_counts[class_id]
+        sample_targets[class_id] = min(
+            SAMPLES_PER_CLASS,
+            available,
+        )
 
-            "column": int(col),
+        if available < SAMPLES_PER_CLASS:
+            print(
+                f"Warning: class {class_id} has only {available} "
+                f"pixels; sampling all available pixels."
+            )
 
-            "x": float(x),
+    # --------------------------------------------------------
+    # PASS 2: choose reproducible random pixels.
+    #
+    # Random priorities are assigned to valid pixels. Retaining
+    # the lowest priorities produces a uniform random sample
+    # without replacement, while keeping memory use bounded.
+    # --------------------------------------------------------
 
-            "y": float(y),
+    print("\nSelecting random sample locations...")
 
-            "predicted_class": int(class_id),
+    # For each class, keep (priority, row, column) arrays.
+    reservoirs = {
+        class_id: (
+            np.empty(0, dtype=np.float64),
+            np.empty(0, dtype=np.int64),
+            np.empty(0, dtype=np.int64),
+        )
+        for class_id in class_ids
+    }
 
-            "predicted_class_name":
-                CLASS_NAMES[class_id],
+    for row_off in range(0, height, WINDOW_SIZE):
+        for col_off in range(0, width, WINDOW_SIZE):
 
-            # This is intentionally blank.
-            # YOU will fill this after visual/reference
-            # interpretation.
-            "reference_class": "",
+            window = Window(
+                col_off,
+                row_off,
+                min(WINDOW_SIZE, width - col_off),
+                min(WINDOW_SIZE, height - row_off),
+            )
 
-            "reference_class_name": "",
+            band = src.read(1, window=window, masked=True)
+            values = np.asarray(band.data)
 
-            "confidence": "",
+            valid = ~np.ma.getmaskarray(band)
+            valid &= np.isfinite(values)
+            valid &= values > 0
 
-            "notes": ""
+            if not np.any(valid):
+                continue
 
-        })
+            window_class_ids = np.unique(
+                values[valid].astype(np.int64)
+            )
 
+            for class_value in window_class_ids:
+                class_id = int(class_value)
+                target = sample_targets[class_id]
 
-    print(
-        "Samples created   :",
-        SAMPLES_PER_CLASS
-    )
+                if target == 0:
+                    continue
 
+                local_rows, local_cols = np.where(
+                    valid & (values == class_value)
+                )
 
-# ============================================================
-# SHUFFLE SAMPLES
-# ============================================================
+                if local_rows.size == 0:
+                    continue
 
-rng.shuffle(all_samples)
+                candidate_priorities = rng.random(local_rows.size)
 
+                candidate_rows = local_rows.astype(np.int64) + row_off
+                candidate_cols = local_cols.astype(np.int64) + col_off
 
-# Reassign sample IDs after shuffling
+                old_priorities, old_rows, old_cols = reservoirs[class_id]
 
-for i, sample in enumerate(all_samples):
+                combined_priorities = np.concatenate(
+                    [old_priorities, candidate_priorities]
+                )
+                combined_rows = np.concatenate(
+                    [old_rows, candidate_rows]
+                )
+                combined_cols = np.concatenate(
+                    [old_cols, candidate_cols]
+                )
 
-    sample["sample_id"] = i + 1
+                keep_count = min(target, combined_priorities.size)
+
+                if combined_priorities.size > keep_count:
+                    keep = np.argpartition(
+                        combined_priorities,
+                        keep_count - 1,
+                    )[:keep_count]
+                else:
+                    keep = np.arange(combined_priorities.size)
+
+                reservoirs[class_id] = (
+                    combined_priorities[keep],
+                    combined_rows[keep],
+                    combined_cols[keep],
+                )
+
+    # --------------------------------------------------------
+    # BUILD SAMPLE RECORDS
+    # --------------------------------------------------------
+
+    all_samples = []
+
+    for class_id in class_ids:
+        _, rows, cols = reservoirs[class_id]
+
+        if len(rows) != sample_targets[class_id]:
+            raise RuntimeError(
+                f"Expected {sample_targets[class_id]} samples for "
+                f"class {class_id}, but selected {len(rows)}."
+            )
+
+        # Shuffle the class-specific locations before creating records.
+        order = rng.permutation(len(rows))
+
+        rows = rows[order]
+        cols = cols[order]
+
+        for row, col in zip(rows, cols):
+            x, y = rasterio.transform.xy(
+                transform,
+                int(row),
+                int(col),
+                offset="center",
+            )
+
+            all_samples.append({
+                "sample_id": None,
+                "row": int(row),
+                "column": int(col),
+                "x": float(x),
+                "y": float(y),
+                "crs": str(crs),
+                "predicted_class": int(class_id),
+                "predicted_class_name": f"K-Means cluster {class_id}",
+                "reference_class": "",
+                "reference_class_name": "",
+                "confidence": "",
+                "notes": "",
+            })
+
+    # Shuffle the complete sample list and assign unique IDs.
+    rng.shuffle(all_samples)
+
+    for sample_id, sample in enumerate(all_samples, start=1):
+        sample["sample_id"] = sample_id
 
 
 # ============================================================
 # SAVE CSV
 # ============================================================
-
-print("\nSaving reference sample file...")
 
 fieldnames = [
     "sample_id",
@@ -215,86 +311,65 @@ fieldnames = [
     "column",
     "x",
     "y",
+    "crs",
     "predicted_class",
     "predicted_class_name",
     "reference_class",
     "reference_class_name",
     "confidence",
-    "notes"
+    "notes",
 ]
 
+print("\nSaving reference samples...")
 
 with open(
     OUTPUT_CSV,
     "w",
     newline="",
-    encoding="utf-8"
-) as f:
+    encoding="utf-8-sig",
+) as file:
 
-    writer = csv.DictWriter(
-        f,
-        fieldnames=fieldnames
-    )
-
+    writer = csv.DictWriter(file, fieldnames=fieldnames)
     writer.writeheader()
-
-    writer.writerows(
-        all_samples
-    )
+    writer.writerows(all_samples)
 
 
 # ============================================================
 # SUMMARY
 # ============================================================
 
-print("\n")
-print("=" * 70)
+print("\n" + "=" * 70)
 print("REFERENCE SAMPLE GENERATION COMPLETE")
 print("=" * 70)
 
-print("\nTotal samples :", len(all_samples))
+print("Total samples:", len(all_samples))
 
-for class_id in CLASSES:
-
-    count = sum(
-        s["predicted_class"] == class_id
-        for s in all_samples
+for class_id in class_ids:
+    actual_count = sum(
+        sample["predicted_class"] == class_id
+        for sample in all_samples
     )
 
     print(
-        f"Class {class_id} : {count} samples"
+        f"Class {class_id}: {actual_count} samples "
+        f"from {class_counts[class_id]:,} available pixels"
     )
-
 
 print("\nCreated:")
 print(OUTPUT_CSV)
 
-print("\n")
-print("=" * 70)
-print("IMPORTANT NEXT STEP")
-print("=" * 70)
-
-print("""
-The reference_class column is intentionally EMPTY.
-
-Do NOT copy predicted_class into reference_class.
-
-You must determine the actual/reference class for each
-sample using independent geographic/reference information.
-
-For example:
-
-reference_class = 1
-reference_class = 2
-reference_class = 3
-reference_class = 4
-reference_class = 5
-
-Then record the appropriate reference_class_name,
-confidence and notes.
-
-The reference labels should be based on independent
-reference information, not the K-Means result itself.
-""")
-
+print("\nIMPORTANT NEXT STEP")
+print("-" * 70)
+print(
+    "Independently label each sample using suitable reference imagery, "
+    "field observations, or other reliable geographic data."
+)
+print(
+    "Do not copy predicted_class into reference_class. Leave the "
+    "reference fields blank until the actual/reference label is assigned."
+)
+print(
+    "Record the source and date of the reference evidence in the notes "
+    "field where possible."
+)
 print("=" * 70)

@@ -3,10 +3,13 @@ import numpy as np
 import rasterio
 import matplotlib.pyplot as plt
 
+from pathlib import Path
 
-BASE_DIR = r"D:\FinalYearPrj\prj"
-INPUT_DIR = os.path.join(BASE_DIR, "NISAR_output")
-RESULTS_DIR = os.path.join(BASE_DIR, "NISAR_results")
+BASE_DIR = Path(__file__).resolve().parent.parent
+INPUT_DIR = BASE_DIR / "NISAR_output"
+RESULTS_DIR = BASE_DIR / "NISAR_results"
+
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 

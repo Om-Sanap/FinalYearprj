@@ -1,71 +1,111 @@
-WAYANAD NISAR K-MEANS CLASS INTERPRETATION
-============================================================
+WAYANAD NISAR K-MEANS CLASS VALIDATION
+=================================================================
 
-IMPORTANT:
-K-Means class numbers are arbitrary. The interpretations below are provisional and must be validated using reference data or known geographic features.
+Classification raster: D:\FinalYearPrj\prj\NISAR_results\wayanad_kmeans_classification.tif
+CRS: EPSG:32643
+Raster dimensions: 7237 x 5838
+Pixel area: 100.00 m²
+Detected class IDs: [1, 2, 3, 4, 5, 6]
+Common valid pixels used for statistics: 26,661,494
 
-CLASS 1
---------------------------------------------------
-Interpretation: Mixed vegetation / agricultural surface
-Percentage: 35.28%
-Area: 998.27 km²
-HH mean: -5.9021 dB
-HV mean: -10.7120 dB
-HH/HV ratio: 3.1413
-Normalized difference: 0.4963
+IMPORTANT LIMITATIONS
+-----------------------------------------------------------------
+K-Means class numbers are arbitrary cluster identifiers. The statistics describe radar-feature distributions and do not independently establish land-cover identity.
 
-Description:
-Moderate HH and HV response with intermediate HH/HV ratio; may represent mixed vegetation, agricultural land or moderately structured surfaces.
+The class percentages are calculated relative to pixels valid in the classification and all four feature rasters. They may differ from percentages based on the entire district or the classification raster alone.
 
-CLASS 2
---------------------------------------------------
-Interpretation: Built-up / exposed structured surface
-Percentage: 23.56%
-Area: 666.72 km²
-HH mean: -4.5167 dB
-HV mean: -13.3346 dB
-HH/HV ratio: 8.0541
-Normalized difference: 0.7598
+These statistics are descriptive, not an independent accuracy assessment. Accuracy assessment requires independent reference labels and an appropriate sampling and validation procedure.
 
-Description:
-Strong HH dominance and relatively high HH/HV ratio; potentially associated with built-up, exposed or strongly structured surfaces.
+CLASS STATISTICS
+=================================================================
 
-CLASS 3
---------------------------------------------------
-Interpretation: Strong structural / double-bounce-like scattering
-Percentage: 4.99%
-Area: 141.31 km²
-HH mean: -4.5461 dB
-HV mean: -18.6536 dB
-HH/HV ratio: 28.4249
-Normalized difference: 0.9201
+CLASS 1: Dense vegetation / forest
+---------------------------------------------
+Interpretation: Dense vegetation / forest (provisional interpretation of radar cluster 1)
+Pixels: 6,018,405
+Percentage of common valid pixels: 22.57%
+Area: 601.841 km²
+HH_dB mean: -7.634287
+HH_dB standard deviation: 1.473538
+HV_dB mean: -12.083098
+HV_dB standard deviation: 1.259026
+HH_HV_ratio mean: 2.878905
+HH_HV_ratio standard deviation: 0.730505
+Normalized_difference mean: 0.465601
+Normalized_difference standard deviation: 0.101663
 
-Description:
-Very strong HH dominance, very low HV and high HH/HV ratio; potentially associated with strongly structured or anthropogenic surfaces.
+CLASS 2: Mixed vegetation
+---------------------------------------------
+Interpretation: Mixed vegetation (provisional interpretation of radar cluster 2)
+Pixels: 5,310,090
+Percentage of common valid pixels: 19.92%
+Area: 531.009 km²
+HH_dB mean: -4.199875
+HH_dB standard deviation: 1.473134
+HV_dB mean: -8.354504
+HV_dB standard deviation: 1.472057
+HH_HV_ratio mean: 2.696898
+HH_HV_ratio standard deviation: 0.706292
+Normalized_difference mean: 0.438596
+Normalized_difference standard deviation: 0.109290
 
-CLASS 4
---------------------------------------------------
-Interpretation: Low-backscatter smooth surface
-Percentage: 18.00%
-Area: 509.24 km²
-HH mean: -11.3763 dB
-HV mean: -18.4922 dB
-HH/HV ratio: 5.9565
-Normalized difference: 0.6486
+CLASS 3: Built-up
+---------------------------------------------
+Interpretation: Built-up (provisional interpretation of radar cluster 3)
+Pixels: 6,350,711
+Percentage of common valid pixels: 23.82%
+Area: 635.071 km²
+HH_dB mean: -2.878849
+HH_dB standard deviation: 1.943899
+HV_dB mean: -11.236804
+HV_dB standard deviation: 1.630105
+HH_HV_ratio mean: 8.395604
+HH_HV_ratio standard deviation: 15.142209
+Normalized_difference mean: 0.728525
+Normalized_difference standard deviation: 0.086685
 
-Description:
-Relatively low HH and HV backscatter; may include water, radar-shadow, smooth terrain or other low-scattering surfaces.
+CLASS 4: Water / smooth surface
+---------------------------------------------
+Interpretation: Water / smooth surface (provisional interpretation of radar cluster 4)
+Pixels: 4,143,086
+Percentage of common valid pixels: 15.54%
+Area: 414.309 km²
+HH_dB mean: -6.726846
+HH_dB standard deviation: 1.755372
+HV_dB mean: -15.361010
+HV_dB standard deviation: 1.769960
+HH_HV_ratio mean: 8.470014
+HH_HV_ratio standard deviation: 8.078752
+Normalized_difference mean: 0.742919
+Normalized_difference standard deviation: 0.086948
 
-CLASS 5
---------------------------------------------------
-Interpretation: Forest / dense vegetation
-Percentage: 18.17%
-Area: 514.17 km²
-HH mean: -9.0830 dB
-HV mean: -10.2011 dB
-HH/HV ratio: 1.3734
-Normalized difference: 0.1260
+CLASS 5: Bare / exposed surface
+---------------------------------------------
+Interpretation: Bare / exposed surface (provisional interpretation of radar cluster 5)
+Pixels: 3,301,744
+Percentage of common valid pixels: 12.38%
+Area: 330.174 km²
+HH_dB mean: -8.133014
+HH_dB standard deviation: 1.962825
+HV_dB mean: -8.864037
+HV_dB standard deviation: 1.984256
+HH_HV_ratio mean: 1.234655
+HH_HV_ratio standard deviation: 0.326330
+Normalized_difference mean: 0.083464
+Normalized_difference standard deviation: 0.150413
 
-Description:
-Relatively strong HV response, low HH/HV ratio and low normalized difference; consistent with vegetation-related volume scattering.
+CLASS 6: Wetland / waterlogged vegetation
+---------------------------------------------
+Interpretation: Wetland / waterlogged vegetation (provisional interpretation of radar cluster 6)
+Pixels: 1,537,458
+Percentage of common valid pixels: 5.77%
+Area: 153.746 km²
+HH_dB mean: -14.065364
+HH_dB standard deviation: 2.540560
+HV_dB mean: -19.292704
+HV_dB standard deviation: 2.457939
+HH_HV_ratio mean: 4.005863
+HH_HV_ratio standard deviation: 6.158989
+Normalized_difference mean: 0.507645
+Normalized_difference standard deviation: 0.208374
 

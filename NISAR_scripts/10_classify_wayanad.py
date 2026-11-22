@@ -1,292 +1,324 @@
-import os
+
+from pathlib import Path
+
 import numpy as np
 import rasterio
-import matplotlib.pyplot as plt
-
+from rasterio.windows import Window
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
 
 
 # ============================================================
-# WAYANAD NISAR - K-MEANS CLASSIFICATION
+# 1. PATHS AND SETTINGS
 # ============================================================
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from pathlib import Path
 
-INPUT_DIR = os.path.join(BASE_DIR, "NISAR_output")
-RESULT_DIR = os.path.join(BASE_DIR, "NISAR_results")
+BASE_DIR = Path(__file__).resolve().parent.parent
 
-os.makedirs(RESULT_DIR, exist_ok=True)
+INPUT_DIR = BASE_DIR / "NISAR_output"
+RESULTS_DIR = BASE_DIR / "NISAR_results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Input feature files
 FEATURE_FILES = {
-    "HH_dB": os.path.join(INPUT_DIR, "wayanad_HH_dB.tif"),
-    "HV_dB": os.path.join(INPUT_DIR, "wayanad_HV_dB.tif"),
-    "HH_HV_ratio": os.path.join(INPUT_DIR, "wayanad_HH_HV_ratio.tif"),
-    "Normalized_Difference": os.path.join(
-        INPUT_DIR, "wayanad_normalized_difference.tif"
+    "HH_dB": INPUT_DIR / "wayanad_HH_dB.tif",
+    "HV_dB": INPUT_DIR / "wayanad_HV_dB.tif",
+    "Normalized_Difference": (
+        INPUT_DIR / "wayanad_normalized_difference.tif"
     ),
 }
 
-OUTPUT_TIF = os.path.join(
-    INPUT_DIR, "wayanad_kmeans_classes.tif"
-)
+OUTPUT_TIF = RESULTS_DIR / "wayanad_kmeans_classification.tif"
+OUTPUT_PNG = RESULTS_DIR / "wayanad_kmeans_classification.png"
 
-OUTPUT_PNG = os.path.join(
-    RESULT_DIR, "wayanad_kmeans_map.png"
-)
+N_CLUSTERS = 6
+SAMPLES_PER_WINDOW = 1000
+WINDOW_SIZE = 512
+RANDOM_SEED = 42
 
-
-print("=" * 70)
-print("WAYANAD NISAR K-MEANS CLASSIFICATION")
-print("=" * 70)
 
 
 # ============================================================
-# 1. READ FEATURES
+# 2. CHECK INPUT FILES AND RASTER ALIGNMENT
 # ============================================================
-
-arrays = []
-profile = None
 
 for name, path in FEATURE_FILES.items():
-
-    print(f"Loading: {name}")
-
-    if not os.path.exists(path):
+    if not path.exists():
         raise FileNotFoundError(
-            f"Feature file not found:\n{path}"
+            f"Missing feature raster: {path}\n"
+            f"Check the output filename from script 8."
         )
 
+feature_names = list(FEATURE_FILES.keys())
+feature_paths = [FEATURE_FILES[name] for name in feature_names]
+
+with rasterio.open(feature_paths[0]) as reference:
+    reference_profile = reference.profile.copy()
+    width = reference.width
+    height = reference.height
+    reference_crs = reference.crs
+    reference_transform = reference.transform
+
+for path in feature_paths[1:]:
     with rasterio.open(path) as src:
+        if src.width != width or src.height != height:
+            raise ValueError(
+                f"Raster dimensions do not match: {path.name}"
+            )
 
-        data = src.read(1).astype(np.float32)
+        if src.crs != reference_crs:
+            raise ValueError(
+                f"CRS does not match: {path.name}"
+            )
 
-        if profile is None:
-            profile = src.profile.copy()
+        if src.transform != reference_transform:
+            raise ValueError(
+                f"Raster transform does not match: {path.name}"
+            )
 
-        arrays.append(data)
-
-
-hh_db = arrays[0]
-hv_db = arrays[1]
-ratio = arrays[2]
-normalized_difference = arrays[3]
-
-
-# ============================================================
-# 2. CREATE VALID PIXEL MASK
-# ============================================================
-
-valid_mask = (
-    np.isfinite(hh_db)
-    & np.isfinite(hv_db)
-    & np.isfinite(ratio)
-    & np.isfinite(normalized_difference)
-)
-
-print()
-print("Input shape:", hh_db.shape)
-print("Valid pixels:", np.sum(valid_mask))
-print("Invalid pixels:", np.sum(~valid_mask))
+print("Input rasters aligned successfully.")
+print(f"Raster dimensions: {width} x {height}")
+print(f"CRS: {reference_crs}")
+print(f"Features used: {', '.join(feature_names)}")
 
 
 # ============================================================
-# 3. CREATE FEATURE MATRIX
+# 3. WINDOW GENERATOR
 # ============================================================
 
-features = np.column_stack([
-    hh_db[valid_mask],
-    hv_db[valid_mask],
-    ratio[valid_mask],
-    normalized_difference[valid_mask]
-])
+def generate_windows(raster_width, raster_height, window_size):
+    """Yield windows that cover the raster without overlap."""
+    for row_off in range(0, raster_height, window_size):
+        for col_off in range(0, raster_width, window_size):
+            win_width = min(window_size, raster_width - col_off)
+            win_height = min(window_size, raster_height - row_off)
 
-print("Feature matrix shape:", features.shape)
-
-
-# ============================================================
-# 4. REMOVE EXTREME VALUES
-# ============================================================
-# Ratio can contain unusually large values.
-# Limit extreme values using percentile clipping.
-
-ratio_low = np.percentile(features[:, 2], 1)
-ratio_high = np.percentile(features[:, 2], 99)
-
-features[:, 2] = np.clip(
-    features[:, 2],
-    ratio_low,
-    ratio_high
-)
-
-print()
-print("Ratio clipping:")
-print("1st percentile :", ratio_low)
-print("99th percentile:", ratio_high)
+            yield Window(
+                col_off=col_off,
+                row_off=row_off,
+                width=win_width,
+                height=win_height,
+            )
 
 
 # ============================================================
-# 5. STANDARDIZE FEATURES
+# 4. READ FEATURES FOR ONE WINDOW
 # ============================================================
 
-print()
-print("Standardizing features...")
+def read_feature_window(datasets, window):
+    """
+    Return a feature matrix and a validity mask for one window.
+    Invalid pixels are excluded from clustering.
+    """
+    arrays = [
+        ds.read(1, window=window).astype(np.float32)
+        for ds in datasets
+    ]
+
+    valid = np.ones(arrays[0].shape, dtype=bool)
+
+    for array in arrays:
+        valid &= np.isfinite(array)
+
+    # Flatten valid pixel values into (pixels, features).
+    feature_matrix = np.column_stack(
+        [array[valid] for array in arrays]
+    )
+
+    return feature_matrix, valid
+
+
+# ============================================================
+# 5. COLLECT A REPRESENTATIVE TRAINING SAMPLE
+# ============================================================
+
+rng = np.random.default_rng(RANDOM_SEED)
+sample_parts = []
+
+print("\nCollecting training samples from raster windows...")
+
+with (
+    rasterio.open(FEATURE_FILES["HH_dB"]) as hh_src,
+    rasterio.open(FEATURE_FILES["HV_dB"]) as hv_src,
+    rasterio.open(FEATURE_FILES["Normalized_Difference"]) as nd_src,
+):
+    datasets = [hh_src, hv_src, nd_src]
+
+    for window in generate_windows(width, height, WINDOW_SIZE):
+        features, valid = read_feature_window(datasets, window)
+
+        if features.shape[0] == 0:
+            continue
+
+        n_to_take = min(SAMPLES_PER_WINDOW, features.shape[0])
+
+        if features.shape[0] > n_to_take:
+            chosen = rng.choice(
+                features.shape[0],
+                size=n_to_take,
+                replace=False,
+            )
+            features = features[chosen]
+
+        sample_parts.append(features)
+
+if not sample_parts:
+    raise RuntimeError(
+        "No valid pixels found. Check the feature rasters "
+        "and their NoData values."
+    )
+
+training_sample = np.concatenate(sample_parts, axis=0)
+
+if training_sample.shape[0] < N_CLUSTERS:
+    raise RuntimeError(
+        f"Only {training_sample.shape[0]} valid samples found; "
+        f"cannot fit {N_CLUSTERS} clusters."
+    )
+
+print(f"Training samples collected: {len(training_sample):,}")
+
+
+# ============================================================
+# 6. SCALE FEATURES AND TRAIN K-MEANS
+# ============================================================
+
+print("\nScaling training features...")
 
 scaler = StandardScaler()
+training_scaled = scaler.fit_transform(training_sample)
 
-features_scaled = scaler.fit_transform(features)
-
-
-# ============================================================
-# 6. K-MEANS CLASSIFICATION
-# ============================================================
-
-# Number of classes
-N_CLASSES = 5
-
-print()
-print("Running K-Means...")
-print("Number of classes:", N_CLASSES)
+print("Training K-Means model...")
 
 kmeans = KMeans(
-    n_clusters=N_CLASSES,
-    random_state=42,
-    n_init=10
+    n_clusters=N_CLUSTERS,
+    random_state=RANDOM_SEED,
+    n_init=10,
 )
 
-labels = kmeans.fit_predict(features_scaled)
+kmeans.fit(training_scaled)
 
-# Make class numbers start from 1
-labels = labels + 1
-
-
-# ============================================================
-# 7. CREATE CLASSIFICATION RASTER
-# ============================================================
-
-classification = np.zeros(
-    hh_db.shape,
-    dtype=np.uint8
-)
-
-classification[valid_mask] = labels
+print("K-Means training complete.")
+print(f"Number of clusters: {N_CLUSTERS}")
 
 
 # ============================================================
-# 8. SAVE CLASSIFICATION RASTER
+# 7. CLASSIFY THE FULL RASTER IN WINDOWS
 # ============================================================
 
-profile.update(
-    dtype="uint8",
+output_profile = reference_profile.copy()
+output_profile.update(
+    driver="GTiff",
     count=1,
+    dtype="uint8",
     nodata=0,
-    compress="lzw"
+    compress="lzw",
+    BIGTIFF="IF_SAFER",
 )
 
-with rasterio.open(
-    OUTPUT_TIF,
-    "w",
-    **profile
-) as dst:
+class_counts = np.zeros(N_CLUSTERS + 1, dtype=np.int64)
+valid_pixel_count = 0
 
-    dst.write(classification, 1)
+print("\nClassifying the full raster in windows...")
 
+with (
+    rasterio.open(FEATURE_FILES["HH_dB"]) as hh_src,
+    rasterio.open(FEATURE_FILES["HV_dB"]) as hv_src,
+    rasterio.open(FEATURE_FILES["Normalized_Difference"]) as nd_src,
+    rasterio.open(OUTPUT_TIF, "w", **output_profile) as out_dst,
+):
+    datasets = [hh_src, hv_src, nd_src]
 
-print()
-print("Classification raster saved:")
-print(OUTPUT_TIF)
+    for window in generate_windows(width, height, WINDOW_SIZE):
+        features, valid = read_feature_window(datasets, window)
 
+        # Zero represents NoData. Valid clusters are numbered 1 to 4.
+        output_array = np.zeros(valid.shape, dtype=np.uint8)
 
-# ============================================================
-# 9. PRINT CLASS STATISTICS
-# ============================================================
+        if features.shape[0] > 0:
+            scaled_features = scaler.transform(features)
+            predictions = kmeans.predict(scaled_features)
 
-print()
-print("=" * 70)
-print("CLASS STATISTICS")
-print("=" * 70)
+            output_array[valid] = (predictions + 1).astype(np.uint8)
 
-for class_id in range(1, N_CLASSES + 1):
+            counts = np.bincount(
+                predictions,
+                minlength=N_CLUSTERS,
+            )
+            class_counts[1:] += counts
+            valid_pixel_count += len(predictions)
 
-    mask = labels == class_id
+        out_dst.write(output_array, 1, window=window)
 
-    count = np.sum(mask)
-    percentage = (count / len(labels)) * 100
+print(f"\nClassification raster saved:\n{OUTPUT_TIF}")
+print(f"Valid classified pixels: {valid_pixel_count:,}")
 
-    class_features = features[mask]
-
-    print()
-    print(f"Class {class_id}")
-    print("-" * 30)
-    print("Pixels     :", count)
-    print("Percentage :", f"{percentage:.2f}%")
-    print("HH dB mean :", np.mean(class_features[:, 0]))
-    print("HV dB mean :", np.mean(class_features[:, 1]))
-    print("Ratio mean :", np.mean(class_features[:, 2]))
+for cluster_id in range(1, N_CLUSTERS + 1):
+    count = int(class_counts[cluster_id])
+    percentage = (
+        100.0 * count / valid_pixel_count
+        if valid_pixel_count
+        else 0.0
+    )
     print(
-        "ND mean    :",
-        np.mean(class_features[:, 3])
+        f"Cluster {cluster_id}: {count:,} pixels "
+        f"({percentage:.2f}%)"
     )
 
 
 # ============================================================
-# 10. VISUALIZE CLASSIFICATION
+# 8. CREATE A LOWER-RESOLUTION VISUALIZATION
 # ============================================================
 
-print()
-print("Creating classification map...")
+print("\nCreating classification preview...")
 
-plt.figure(figsize=(10, 12))
-
-masked_classification = np.ma.masked_where(
-    classification == 0,
-    classification
+preview_max_dimension = 1500
+scale_factor = min(
+    1.0,
+    preview_max_dimension / max(width, height),
 )
 
-plt.imshow(
-    masked_classification,
+preview_width = max(1, int(width * scale_factor))
+preview_height = max(1, int(height * scale_factor))
+
+with rasterio.open(OUTPUT_TIF) as src:
+    preview = src.read(
+        1,
+        out_shape=(preview_height, preview_width),
+        resampling=rasterio.enums.Resampling.nearest,
+    )
+
+masked_preview = np.ma.masked_equal(preview, 0)
+
+fig, ax = plt.subplots(figsize=(10, 8))
+
+image = ax.imshow(
+    masked_preview,
     cmap="tab10",
-    interpolation="nearest"
+    vmin=1,
+    vmax=N_CLUSTERS,
+    interpolation="nearest",
 )
 
-plt.title(
-    "NISAR Wayanad - K-Means Unsupervised Classification"
+colorbar = fig.colorbar(
+    image,
+    ax=ax,
+    ticks=list(range(1, N_CLUSTERS + 1)),
 )
+colorbar.set_label("K-Means cluster ID")
 
-plt.xlabel("Pixel Column")
-plt.ylabel("Pixel Row")
+ax.set_title("Wayanad NISAR GCOV — K-Means Clustering")
+ax.set_xlabel("Raster column")
+ax.set_ylabel("Raster row")
 
-cbar = plt.colorbar()
-cbar.set_label("K-Means Class")
+fig.tight_layout()
+fig.savefig(OUTPUT_PNG, dpi=200, bbox_inches="tight")
+plt.close(fig)
 
-plt.tight_layout()
-
-plt.savefig(
-    OUTPUT_PNG,
-    dpi=300,
-    bbox_inches="tight"
+print(f"Classification preview saved:\n{OUTPUT_PNG}")
+print("\nDone.")
+print(
+    "Note: cluster IDs indicate radar-scattering groups; "
+    "they are not validated land-cover labels."
 )
-
-plt.close()
-
-
-# ============================================================
-# COMPLETE
-# ============================================================
-
-print()
-print("=" * 70)
-print("K-MEANS CLASSIFICATION COMPLETE")
-print("=" * 70)
-
-print()
-print("Created:")
-print(OUTPUT_TIF)
-print(OUTPUT_PNG)
-
-print()
-print("Number of classes:", N_CLASSES)
-print("Valid pixels:", np.sum(valid_mask))
-
-print("=" * 70)

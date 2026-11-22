@@ -1,17 +1,15 @@
+
 import h5py
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
-
-INPUT = "D:\\FinalYearPrj\\prj\\NISAR_original\\NISAR_L2_PR_GCOV_028_077_D_083_4005_DHDH_A_20260818T131953_20260818T132027_P05023_N_F_J_001.h5"
-
 from pathlib import Path
 
-# Project root = one level above NISAR_scripts
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-INPUT = next(
-    (PROJECT_ROOT / "NISAR_original").glob("*.h5")
+INPUT = (
+    PROJECT_ROOT / "NISAR_original"
+    / "NISAR_L2_PR_GCOV_028_005_D_082_4005_DHDH_A_20260813T132738_20260813T132813_P05023_N_F_J_001.h5"
 )
 
 OUTPUT_DIR = PROJECT_ROOT / "NISAR_output"
@@ -21,70 +19,79 @@ HH_OUTPUT = OUTPUT_DIR / "wayanad_HH.tif"
 HV_OUTPUT = OUTPUT_DIR / "wayanad_HV.tif"
 MASK_OUTPUT = OUTPUT_DIR / "wayanad_mask.tif"
 
-print("Input:", INPUT)
-print("Output:", OUTPUT_DIR)
+BASE = "science/LSAR/GCOV/grids/frequencyA"
 
-# Wayanad pixel window obtained previously
-ROW_MIN = 2772
-ROW_MAX = 10553
-
-COL_MIN = 4325
-COL_MAX = 10100
-
-# NISAR georeferencing
-X_FIRST = 573125.0
-Y_FIRST = 1365835.0
-
-PIXEL_SIZE = 10.0
+# Approximate Wayanad-area bounds in EPSG:32643.
+# These are a provisional rectangle, NOT the district boundary.
+X_MIN, X_MAX = 584125.76, 656496.39
+Y_MIN, Y_MAX = 1265174.46, 1323548.90
 
 with h5py.File(INPUT, "r") as f:
+    grid = f[BASE]
 
-    HH = f["science/LSAR/GCOV/grids/frequencyA/HHHH"][
-        ROW_MIN:ROW_MAX,
-        COL_MIN:COL_MAX
-    ]
+    x = grid["xCoordinates"][:]
+    y = grid["yCoordinates"][:]
 
-    HV = f["science/LSAR/GCOV/grids/frequencyA/HVHV"][
-        ROW_MIN:ROW_MAX,
-        COL_MIN:COL_MAX
-    ]
+    pixel_size = float(grid["xCoordinateSpacing"][()])
 
-    MASK = f["science/LSAR/GCOV/grids/frequencyA/mask"][
-        ROW_MIN:ROW_MAX,
-        COL_MIN:COL_MAX
-    ]
+    # Find coordinate indices within the requested bounds.
+    cols = np.where((x >= X_MIN) & (x <= X_MAX))[0]
+    rows = np.where((y >= Y_MIN) & (y <= Y_MAX))[0]
 
-# Replace invalid values
-HH = np.asarray(HH, dtype=np.float32)
-HV = np.asarray(HV, dtype=np.float32)
-MASK = np.asarray(MASK, dtype=np.uint8)
+    if len(cols) == 0 or len(rows) == 0:
+        raise ValueError(
+            "Requested bounds do not overlap the scene coordinates. "
+            "Check X/Y bounds and the scene coverage."
+        )
 
-HH[MASK == 255] = np.nan
-HV[MASK == 255] = np.nan
+    row_min, row_max = int(rows.min()), int(rows.max()) + 1
+    col_min, col_max = int(cols.min()), int(cols.max()) + 1
 
-# Calculate geographic origin of extracted window
-x_origin = X_FIRST + COL_MIN * PIXEL_SIZE
-y_origin = Y_FIRST - ROW_MIN * PIXEL_SIZE
+    print("Input:", INPUT.name)
+    print("CRS: EPSG:32643")
+    print("Crop rows:", row_min, "to", row_max - 1)
+    print("Crop cols:", col_min, "to", col_max - 1)
+    print("Crop size:", row_max - row_min, "x", col_max - col_min)
+    print(
+        "Crop coordinate extent:",
+        float(x[col_min]), float(x[col_max - 1]),
+        float(y[row_max - 1]), float(y[row_min])
+    )
 
+    HH = grid["HHHH"][row_min:row_max, col_min:col_max]
+    HV = grid["HVHV"][row_min:row_max, col_min:col_max]
+    MASK = grid["mask"][row_min:row_max, col_min:col_max]
+
+    HH = np.asarray(HH, dtype=np.float32)
+    HV = np.asarray(HV, dtype=np.float32)
+    MASK = np.asarray(MASK, dtype=np.uint8)
+
+
+# Mask outside-acquisition and invalid/partially focused pixels.
+invalid = (MASK == 255) | (MASK == 0)
+HH[invalid] = np.nan
+HV[invalid] = np.nan
+
+# pixel_size was already read inside the HDF5 file block.
+# The product metadata reports x spacing +10 m and y spacing -10 m.
 transform = from_origin(
-    x_origin,
-    y_origin,
-    PIXEL_SIZE,
-    PIXEL_SIZE
+    float(x[col_min]) - pixel_size / 2,
+    float(y[row_min]) + pixel_size / 2,
+    pixel_size,
+    pixel_size
 )
-
-height, width = HH.shape
 
 profile = {
     "driver": "GTiff",
-    "height": height,
-    "width": width,
+    "height": HH.shape[0],
+    "width": HH.shape[1],
     "count": 1,
     "dtype": "float32",
     "crs": "EPSG:32643",
     "transform": transform,
     "nodata": np.nan,
-    "compress": "deflate"
+    "compress": "deflate",
+    "tiled": True
 }
 
 with rasterio.open(HH_OUTPUT, "w", **profile) as dst:
@@ -100,11 +107,9 @@ mask_profile["nodata"] = 255
 with rasterio.open(MASK_OUTPUT, "w", **mask_profile) as dst:
     dst.write(MASK, 1)
 
-print("=" * 70)
-print("WAYANAD EXTRACTION COMPLETE")
-print("=" * 70)
-
-print("Shape:", HH.shape)
+print("\nExtraction complete.")
 print("HH:", HH_OUTPUT)
 print("HV:", HV_OUTPUT)
-print("MASK:", MASK_OUTPUT)
+print("Mask:", MASK_OUTPUT)
+print("Valid HH pixels:", int(np.isfinite(HH).sum()))
+print("Valid HV pixels:", int(np.isfinite(HV).sum()))

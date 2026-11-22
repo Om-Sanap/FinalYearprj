@@ -48,14 +48,17 @@ valid = (
     (hv > 0)
 )
 
+
 print("\nValid pixels:", np.sum(valid))
 
-# ------------------------------------------------------------
-# Use percentile limits to avoid extreme-value domination
-# ------------------------------------------------------------
+if not np.any(valid):
+    raise ValueError(
+        "No valid HH/HV pixels found. Check the cleaned rasters."
+    )
 
 hh_valid = hh[valid]
 hv_valid = hv[valid]
+
 
 hh_min, hh_max = np.percentile(hh_valid, [2, 98])
 hv_min, hv_max = np.percentile(hv_valid, [2, 98])

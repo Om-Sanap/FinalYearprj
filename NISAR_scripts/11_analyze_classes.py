@@ -1,337 +1,376 @@
-import os
+
+from pathlib import Path
+import csv
+
 import numpy as np
 import rasterio
+from rasterio.windows import Window
+from rasterio.enums import Resampling
 import matplotlib.pyplot as plt
 
 
 # ============================================================
-# WAYANAD NISAR - CLASS ANALYSIS
+# 1. PATHS AND SETTINGS
 # ============================================================
 
-BASE_DIR = os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))
-)
+BASE_DIR = Path(__file__).resolve().parent.parent
 
-INPUT_DIR = os.path.join(BASE_DIR, "NISAR_output")
-RESULT_DIR = os.path.join(BASE_DIR, "NISAR_results")
+INPUT_DIR = BASE_DIR / "NISAR_output"
+RESULTS_DIR = BASE_DIR / "NISAR_results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-os.makedirs(RESULT_DIR, exist_ok=True)
+CLASS_FILE = RESULTS_DIR / "wayanad_kmeans_classification.tif"
+
+FEATURE_FILES = {
+    "HH_dB": INPUT_DIR / "wayanad_HH_dB.tif",
+    "HV_dB": INPUT_DIR / "wayanad_HV_dB.tif",
+    "HH_HV_ratio": INPUT_DIR / "wayanad_HH_HV_ratio.tif",
+    "Normalized_Difference": (
+        INPUT_DIR / "wayanad_normalized_difference.tif"
+    ),
+}
+
+OUTPUT_CSV = RESULTS_DIR / "wayanad_class_statistics.csv"
+OUTPUT_MAP = RESULTS_DIR / "wayanad_class_analysis.png"
+
+WINDOW_SIZE = 512
+PREVIEW_MAX_DIMENSION = 1800
 
 
 # ============================================================
-# FILES
+# 2. HELPERS
 # ============================================================
 
-CLASS_FILE = os.path.join(
-    INPUT_DIR,
-    "wayanad_kmeans_classes.tif"
-)
+def generate_windows(width, height, size):
+    """Yield non-overlapping windows covering the raster."""
+    for row in range(0, height, size):
+        for col in range(0, width, size):
+            yield Window(
+                col_off=col,
+                row_off=row,
+                width=min(size, width - col),
+                height=min(size, height - row),
+            )
 
-HH_FILE = os.path.join(
-    INPUT_DIR,
-    "wayanad_HH_dB.tif"
-)
 
-HV_FILE = os.path.join(
-    INPUT_DIR,
-    "wayanad_HV_dB.tif"
-)
+def read_valid_array(dataset, window):
+    """
+    Read one raster window and return its values plus a validity mask.
+    Handles non-finite values and declared raster NoData values.
+    """
+    masked = dataset.read(1, window=window, masked=True)
+    values = np.asarray(masked.data)
+    valid = ~np.ma.getmaskarray(masked)
+    valid &= np.isfinite(values)
+    return values, valid
 
-RATIO_FILE = os.path.join(
-    INPUT_DIR,
-    "wayanad_HH_HV_ratio.tif"
-)
 
-ND_FILE = os.path.join(
-    INPUT_DIR,
-    "wayanad_normalized_difference.tif"
-)
-
-OUTPUT_MAP = os.path.join(
-    RESULT_DIR,
-    "wayanad_class_analysis.png"
-)
-
-OUTPUT_CSV = os.path.join(
-    RESULT_DIR,
-    "wayanad_class_statistics.csv"
-)
-
+# ============================================================
+# 3. CHECK FILES AND GRID ALIGNMENT
+# ============================================================
 
 print("=" * 70)
-print("WAYANAD NISAR CLASS ANALYSIS")
+print("WAYANAD NISAR - CLASS ANALYSIS")
 print("=" * 70)
 
+if not CLASS_FILE.exists():
+    raise FileNotFoundError(
+        f"Classification raster not found:\n{CLASS_FILE}\n"
+        "Run the revised classification script first."
+    )
 
-# ============================================================
-# 1. READ DATA
-# ============================================================
-
-print()
-print("Loading classification...")
+for name, path in FEATURE_FILES.items():
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Feature raster not found for {name}:\n{path}"
+        )
 
 with rasterio.open(CLASS_FILE) as src:
-    classes = src.read(1)
-    profile = src.profile.copy()
-    transform = src.transform
+    width = src.width
+    height = src.height
+    reference_crs = src.crs
+    reference_transform = src.transform
+    class_profile = src.profile.copy()
+    class_nodata = src.nodata
 
+if reference_crs is None:
+    raise ValueError("Classification raster has no CRS.")
 
-print("Loading HH dB...")
-with rasterio.open(HH_FILE) as src:
-    hh = src.read(1)
+if not reference_crs.is_projected:
+    raise ValueError(
+        "Classification CRS is not projected. "
+        "Check the CRS before calculating area."
+    )
 
+# Wayanad raster is expected to use UTM Zone 43N (EPSG:32643),
+# whose coordinate units are metres.
+if reference_crs.to_epsg() != 32643:
+    raise ValueError(
+        f"Expected WGS 84 / UTM zone 43N (EPSG:32643), "
+        f"but found {reference_crs}. "
+        "Verify the CRS and pixel-area units before proceeding."
+    )
 
-print("Loading HV dB...")
-with rasterio.open(HV_FILE) as src:
-    hv = src.read(1)
+for name, path in FEATURE_FILES.items():
+    with rasterio.open(path) as src:
+        if (src.width, src.height) != (width, height):
+            raise ValueError(
+                f"Grid dimensions mismatch for {name}:\n{path}"
+            )
 
+        if src.crs != reference_crs:
+            raise ValueError(
+                f"CRS mismatch for {name}:\n{path}"
+            )
 
-print("Loading HH/HV ratio...")
-with rasterio.open(RATIO_FILE) as src:
-    ratio = src.read(1)
+        if src.transform != reference_transform:
+            raise ValueError(
+                f"Transform mismatch for {name}:\n{path}"
+            )
 
-
-print("Loading normalized difference...")
-with rasterio.open(ND_FILE) as src:
-    nd = src.read(1)
+print(f"\nClassification: {CLASS_FILE}")
+print(f"Raster dimensions: {width} columns x {height} rows")
+print(f"CRS: {reference_crs}")
+print("All feature rasters match the classification grid.")
 
 
 # ============================================================
-# 2. VALID MASK
+# 4. ACCUMULATE STATISTICS WINDOW BY WINDOW
 # ============================================================
 
-valid = (
-    (classes > 0)
-    & np.isfinite(hh)
-    & np.isfinite(hv)
-    & np.isfinite(ratio)
-    & np.isfinite(nd)
+feature_names = list(FEATURE_FILES.keys())
+all_paths = [CLASS_FILE] + [
+    FEATURE_FILES[name] for name in feature_names
+]
+
+# Each cluster gets exact counts and running sums from all valid
+# pixels, without keeping the entire image in memory.
+stats = {}
+
+valid_pixel_count = 0
+total_classified_pixel_count = 0
+class_ids_seen = set()
+
+pixel_area_m2 = abs(
+    reference_transform.a * reference_transform.e
+    - reference_transform.b * reference_transform.d
 )
+pixel_area_ha = pixel_area_m2 / 10000.0
 
+print("\nCalculating cluster statistics...")
 
-valid_classes = classes[valid]
+with (
+    rasterio.open(CLASS_FILE) as class_src,
+    rasterio.open(FEATURE_FILES["HH_dB"]) as hh_src,
+    rasterio.open(FEATURE_FILES["HV_dB"]) as hv_src,
+    rasterio.open(FEATURE_FILES["HH_HV_ratio"]) as ratio_src,
+    rasterio.open(
+        FEATURE_FILES["Normalized_Difference"]
+    ) as nd_src,
+):
+    datasets = [hh_src, hv_src, ratio_src, nd_src]
 
-print()
-print("Image shape:", classes.shape)
-print("Valid pixels:", np.sum(valid))
+    for window in generate_windows(width, height, WINDOW_SIZE):
+        class_values, class_valid = read_valid_array(
+            class_src, window
+        )
+
+        # Class 0 is the NoData/background value from the
+        # classification workflow.
+        classified = class_valid & (class_values > 0)
+        total_classified_pixel_count += int(
+            np.count_nonzero(classified)
+        )
+
+        feature_arrays = []
+        common_valid = classified.copy()
+
+        for dataset in datasets:
+            values, feature_valid = read_valid_array(
+                dataset, window
+            )
+            feature_arrays.append(values.astype(np.float64))
+            common_valid &= feature_valid
+
+        valid_pixel_count += int(np.count_nonzero(common_valid))
+
+        if not np.any(common_valid):
+            continue
+
+        window_classes = class_values[common_valid].astype(np.int64)
+        class_ids_seen.update(np.unique(window_classes).tolist())
+
+        window_features = np.column_stack([
+            values[common_valid] for values in feature_arrays
+        ])
+
+        for class_id in np.unique(window_classes):
+            select = window_classes == class_id
+            data = window_features[select]
+            count = int(np.count_nonzero(select))
+
+            if class_id not in stats:
+                stats[class_id] = {
+                    "count": 0,
+                    "sum": np.zeros(len(feature_names), dtype=np.float64),
+                    "sum_sq": np.zeros(len(feature_names), dtype=np.float64),
+                }
+
+            stats[class_id]["count"] += count
+            stats[class_id]["sum"] += np.sum(data, axis=0)
+            stats[class_id]["sum_sq"] += np.sum(
+                data * data, axis=0
+            )
+
+if not stats or valid_pixel_count == 0:
+    raise RuntimeError(
+        "No valid classified pixels overlap all feature rasters. "
+        "Check NoData masks and feature alignment."
+    )
+
+class_ids = sorted(stats.keys())
+
+print(f"Detected cluster IDs: {class_ids}")
+print(f"Classified pixels (class > 0): {total_classified_pixel_count:,}")
+print(f"Valid pixels used in statistics: {valid_pixel_count:,}")
+
+excluded = total_classified_pixel_count - valid_pixel_count
+print(f"Classified pixels excluded due to invalid features: {excluded:,}")
 
 
 # ============================================================
-# 3. CLASS STATISTICS
+# 5. CALCULATE FINAL STATISTICS AND SAVE CSV
 # ============================================================
 
-print()
-print("=" * 70)
+csv_rows = []
+
+print("\n" + "=" * 70)
 print("CLASS STATISTICS")
 print("=" * 70)
 
-results = []
+for class_id in class_ids:
+    item = stats[class_id]
+    count = item["count"]
 
-pixel_area_m2 = abs(transform.a * transform.e)
-pixel_area_ha = pixel_area_m2 / 10000.0
+    means = item["sum"] / count
+    variances = item["sum_sq"] / count - means ** 2
+    stds = np.sqrt(np.maximum(variances, 0.0))
 
-
-for class_id in range(1, 6):
-
-    mask = valid & (classes == class_id)
-
-    count = np.sum(mask)
-
-    if count == 0:
-        continue
-
-    class_hh = hh[mask]
-    class_hv = hv[mask]
-    class_ratio = ratio[mask]
-    class_nd = nd[mask]
-
-    percentage = (
-        count / np.sum(valid)
-    ) * 100
-
+    percentage = 100.0 * count / valid_pixel_count
     area_m2 = count * pixel_area_m2
     area_ha = count * pixel_area_ha
 
-    print()
-    print(f"CLASS {class_id}")
-    print("-" * 40)
+    row = {
+        "Class_ID": int(class_id),
+        "Pixels": int(count),
+        "Percentage_of_valid_pixels": percentage,
+        "Area_m2": area_m2,
+        "Area_hectares": area_ha,
+    }
 
-    print("Pixels          :", count)
-    print("Percentage      :", f"{percentage:.2f}%")
-    print("Area (m²)       :", f"{area_m2:.2f}")
-    print("Area (hectares) :", f"{area_ha:.2f}")
+    for i, name in enumerate(feature_names):
+        row[f"Mean_{name}"] = means[i]
+        row[f"Std_{name}"] = stds[i]
 
-    print()
-    print("HH dB")
-    print("  Mean :", f"{np.mean(class_hh):.4f}")
-    print("  Std  :", f"{np.std(class_hh):.4f}")
+    csv_rows.append(row)
 
-    print()
-    print("HV dB")
-    print("  Mean :", f"{np.mean(class_hv):.4f}")
-    print("  Std  :", f"{np.std(class_hv):.4f}")
+    print(f"\nCLUSTER {class_id}")
+    print("-" * 45)
+    print(f"Pixels          : {count:,}")
+    print(f"Percentage      : {percentage:.2f}%")
+    print(f"Area (m²)       : {area_m2:,.2f}")
+    print(f"Area (hectares) : {area_ha:,.2f}")
 
-    print()
-    print("HH/HV Ratio")
-    print("  Mean :", f"{np.mean(class_ratio):.4f}")
-    print("  Std  :", f"{np.std(class_ratio):.4f}")
+    for i, name in enumerate(feature_names):
+        print(
+            f"{name}: mean={means[i]:.5f}, "
+            f"std={stds[i]:.5f}"
+        )
 
-    print()
-    print("Normalized Difference")
-    print("  Mean :", f"{np.mean(class_nd):.4f}")
-    print("  Std  :", f"{np.std(class_nd):.4f}")
+fieldnames = [
+    "Class_ID",
+    "Pixels",
+    "Percentage_of_valid_pixels",
+    "Area_m2",
+    "Area_hectares",
+]
 
-    results.append([
-        class_id,
-        count,
-        percentage,
-        area_m2,
-        area_ha,
-        np.mean(class_hh),
-        np.mean(class_hv),
-        np.mean(class_ratio),
-        np.mean(class_nd)
-    ])
+for name in feature_names:
+    fieldnames.extend([f"Mean_{name}", f"Std_{name}"])
 
+with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as file:
+    writer = csv.DictWriter(file, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(csv_rows)
 
-# ============================================================
-# 4. SAVE CSV
-# ============================================================
-
-print()
-print("Saving class statistics...")
-
-header = (
-    "Class,"
-    "Pixels,"
-    "Percentage,"
-    "Area_m2,"
-    "Area_hectares,"
-    "Mean_HH_dB,"
-    "Mean_HV_dB,"
-    "Mean_HH_HV_Ratio,"
-    "Mean_Normalized_Difference"
-)
-
-np.savetxt(
-    OUTPUT_CSV,
-    np.array(results),
-    delimiter=",",
-    header=header,
-    comments="",
-    fmt="%.6f"
-)
-
-print("Saved:")
-print(OUTPUT_CSV)
+print(f"\nStatistics CSV saved:\n{OUTPUT_CSV}")
 
 
 # ============================================================
-# 5. CREATE CLASS MAP
+# 6. CREATE CLASSIFICATION PREVIEW
 # ============================================================
 
-print()
-print("Creating class analysis map...")
+print("\nCreating classification preview...")
 
+preview_width = min(width, PREVIEW_MAX_DIMENSION)
+preview_height = min(height, PREVIEW_MAX_DIMENSION)
 
-masked_classes = np.ma.masked_where(
-    classes == 0,
-    classes
+with rasterio.open(CLASS_FILE) as src:
+    preview = src.read(
+        1,
+        out_shape=(preview_height, preview_width),
+        resampling=Resampling.nearest,
+    )
+
+# Mask zero/NoData; cluster IDs are discovered dynamically.
+masked_preview = np.ma.masked_where(preview == 0, preview)
+
+fig, ax = plt.subplots(figsize=(10, 12))
+
+image = ax.imshow(
+    masked_preview,
+    cmap="tab20",
+    interpolation="nearest",
 )
 
-
-plt.figure(figsize=(10, 12))
-
-plt.imshow(
-    masked_classes,
-    cmap="tab10",
-    vmin=1,
-    vmax=5,
-    interpolation="nearest"
+colorbar = fig.colorbar(
+    image,
+    ax=ax,
+    ticks=class_ids,
 )
+colorbar.set_label("K-Means cluster ID")
 
-plt.title(
-    "Wayanad NISAR - K-Means Class Analysis"
-)
+ax.set_title("Wayanad NISAR - K-Means Class Analysis")
+ax.set_xlabel("Pixel column")
+ax.set_ylabel("Pixel row")
 
-plt.xlabel("Pixel Column")
-plt.ylabel("Pixel Row")
+fig.tight_layout()
+fig.savefig(OUTPUT_MAP, dpi=300, bbox_inches="tight")
+plt.close(fig)
 
-cbar = plt.colorbar(
-    ticks=[1, 2, 3, 4, 5]
-)
-
-cbar.set_label("K-Means Class")
-
-plt.tight_layout()
-
-plt.savefig(
-    OUTPUT_MAP,
-    dpi=300,
-    bbox_inches="tight"
-)
-
-plt.close()
+print(f"Classification preview saved:\n{OUTPUT_MAP}")
 
 
 # ============================================================
-# 6. PRINT INTERPRETATION GUIDE
+# 7. INTERPRETATION NOTES
 # ============================================================
 
-print()
-print("=" * 70)
-print("INTERPRETATION GUIDE")
+print("\n" + "=" * 70)
+print("INTERPRETATION NOTES")
 print("=" * 70)
 
 print("""
-Use the following characteristics when interpreting the classes:
-
-Higher Normalized Difference
-    -> stronger HH dominance
-    -> often associated with vegetation/structured surfaces
-
-Lower Normalized Difference
-    -> HH and HV responses are more similar
-    -> may indicate water, built-up areas, bare surfaces,
-       or other low-vegetation surfaces
-
-Higher HH/HV ratio
-    -> stronger co-polarized response relative to cross-polarized
-    -> useful for distinguishing surface scattering behaviour
-
-Lower HH/HV ratio
-    -> relatively stronger HV response
-    -> may indicate different scattering mechanisms
-
-IMPORTANT:
-K-Means class numbers are arbitrary.
-Class 1 is NOT automatically "Class 1 land cover".
-
-The class labels should be assigned only after examining:
-1. Spatial distribution
-2. HH dB
-3. HV dB
-4. HH/HV ratio
-5. Normalized Difference
-6. Known geographic features
+- Cluster IDs are arbitrary identifiers, not land-cover labels.
+- HH and HV dB describe radar backscatter in decibels.
+- HH/HV ratio and normalized difference are derived indicators.
+- Similar feature statistics do not prove identical land cover.
+- Use independent reference data before naming clusters as
+  forest, water, built-up land, or disaster-damaged areas.
+- Area estimates describe valid classified pixels only.
 """)
 
-
-# ============================================================
-# COMPLETE
-# ============================================================
-
-print()
 print("=" * 70)
 print("CLASS ANALYSIS COMPLETE")
 print("=" * 70)
-
-print()
-print("Created:")
-print(OUTPUT_CSV)
-print(OUTPUT_MAP)
-
-print()
-print("Next step:")
-print("Interpret the five K-Means classes.")
-print("=" * 70)
+print(f"CSV: {OUTPUT_CSV}")
+print(f"Map: {OUTPUT_MAP}")
